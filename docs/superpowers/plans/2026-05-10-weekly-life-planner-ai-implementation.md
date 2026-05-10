@@ -4,9 +4,9 @@
 
 **Goal:** Telegram-based AI weekly life planner backed by PostgreSQL/Supabase, orchestrated by self-hosted n8n, delivered with IEEE paper + demo video by 18 May 2026.
 
-**Architecture:** User chats with `@PlanlaBot` on Telegram. Telegram webhook → n8n workflow → Supabase read/write + OpenAI gpt-4o-mini call → response back to Telegram. Five n8n workflows (4 command-triggered + 1 weekly cron). All workflow JSON, SQL, prompts, and IEEE paper are version-controlled in a public GitHub repo.
+**Architecture:** User chats with `@PlanlaBot` on Telegram. Telegram webhook → n8n workflow → Supabase read/write + Google Gemini 1.5 Flash call → response back to Telegram. Five n8n workflows (4 command-triggered + 1 weekly cron). All workflow JSON, SQL, prompts, and IEEE paper are version-controlled in a public GitHub repo.
 
-**Tech Stack:** Supabase (PostgreSQL 15), n8n (Docker self-hosted), Telegram Bot API, OpenAI gpt-4o-mini (fallback Gemini Flash), GitHub, Docker Desktop on Windows 11.
+**Tech Stack:** Supabase (PostgreSQL 15), n8n (Docker self-hosted), Telegram Bot API, Google Gemini 1.5 Flash (fallback Gemini Flash), GitHub, Docker Desktop on Windows 11.
 
 **Spec reference:** [docs/superpowers/specs/2026-05-10-weekly-life-planner-ai-design.md](../specs/2026-05-10-weekly-life-planner-ai-design.md)
 
@@ -204,7 +204,7 @@ Kullanıcı (Telegram)
        ↓
 Telegram Bot ↔ n8n (Docker)
        ↓
-   Supabase + OpenAI gpt-4o-mini
+   Supabase + Google Gemini 1.5 Flash
 ```
 
 Detay: [docs/architecture.md](docs/architecture.md)
@@ -295,26 +295,32 @@ sil - Tüm verilerimi sil
 
 Now in Telegram, the user sees these commands as a menu.
 
-### Task 0.9: Get OpenAI API key
+### Task 0.9: Get Google Gemini API key (PRIMARY)
 
-- [ ] **Step 1: Go to platform.openai.com**
+- [ ] **Step 1: Go to Google AI Studio**
 
-Sign up with the same email as ChatGPT (or sign in if existing).
+Open https://aistudio.google.com/app/apikey and sign in with your Google account.
 
-- [ ] **Step 2: Add billing or use free credit**
+- [ ] **Step 2: Create API key**
 
-If new account: $5 free credit auto-applied. Otherwise, go to **Billing** → add a card and set a $5 hard limit.
+Click **"Create API key"** → choose "Create API key in new project" (or pick existing GCP project if you have one).
 
-- [ ] **Step 3: Create API key**
+A key like `AIzaSyD...` is generated. **Copy it.**
 
-Go to **API Keys** → **Create new secret key** → name it `weekly-life-planner-n8n`.
-**Copy the key now — it won't be shown again.**
+- [ ] **Step 3: Note the free tier limits**
 
-- [ ] **Step 4: (Fallback) Get Gemini API key as Plan B**
+Gemini 1.5 Flash free tier:
+- 15 requests per minute
+- 1500 requests per day
+- 1 million tokens per minute
+- No credit card required
 
-If OpenAI signup fails or no credit:
-- Go to https://aistudio.google.com/app/apikey
-- Click "Create API key" → save it
+For our use case (~5-10 plan generations per week per user), this is **massively over-provisioned**.
+
+- [ ] **Step 4: (Fallback) OpenAI API key — only if Gemini fails**
+
+If you later want OpenAI as backup:
+- platform.openai.com → add billing → API Keys → create
 
 ### Task 0.10: Create .env.example and local .env
 
@@ -468,7 +474,7 @@ CREATE TABLE IF NOT EXISTS plans (
     hafta_baslangic DATE NOT NULL,
     plan_json JSONB NOT NULL,
     plan_markdown TEXT NOT NULL,
-    model_kullanilan TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+    model_kullanilan TEXT NOT NULL DEFAULT 'gemini-1.5-flash',
     prompt_token INT,
     completion_token INT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -907,15 +913,19 @@ Click "Save".
 
 Expected: "Connection tested successfully".
 
-### Task 2.6: Add OpenAI credential
+### Task 2.6: Add Google Gemini credential
 
-- [ ] **Step 1: Add credential → "OpenAI"**
+- [ ] **Step 1: Add credential → "Google Gemini (PaLM) API"**
+
+In n8n credentials, search "Gemini". Select **"Google Gemini(PaLM) API"** (or "Google Vertex AI" if Gemini variant unavailable).
 
 - [ ] **Step 2: Paste API key**
 
-Paste from `.env`. Click "Save".
+Paste your `GEMINI_API_KEY` from `.env`. Click "Save".
 
 Expected: "Connection tested successfully".
+
+> **Note:** If your n8n version doesn't show a dedicated Gemini node, install the community node: Settings → Community Nodes → Install → search `n8n-nodes-google-gemini`. Or use the generic HTTP Request node — pattern shown in Task 4.4 alternative.
 
 ### Task 2.7: Smoke test — minimal "echo" workflow
 
@@ -1086,7 +1096,7 @@ Ben Beyza Hayat Planlayıcısı. Sana her hafta yapay zekayla kişiselleştirilm
 
 🔒 KVKK Aydınlatma:
 - Verilerin (yaş, hedefler, refleksiyon) Supabase PostgreSQL'de saklanır.
-- Plan üretiminde OpenAI gpt-4o-mini API'si kullanılır.
+- Plan üretiminde Google Gemini 1.5 Flash API'si kullanılır.
 - Üçüncü şahıslarla paylaşılmaz.
 - /sil yazarak istediğin an tüm verini silebilirsin.
 
@@ -1622,29 +1632,64 @@ KURALLAR:
 return [{ json: { systemPrompt, userPrompt, weekHeader: `${wi.hafta_baslangic} – ${wi.hafta_bitis}` } }];
 ```
 
-- [ ] **Step 6: OpenAI node "Generate Plan"**
+- [ ] **Step 6: HTTP Request node "Generate Plan via Gemini"**
 
-- Resource: Chat
-- Operation: Message a model
-- Model: `gpt-4o-mini`
-- Messages:
-  - Role: System, Content: `={{ $json.systemPrompt }}`
-  - Role: User, Content: `={{ $json.userPrompt }}`
-- Options:
-  - Maximum Tokens: `2000`
-  - Temperature: `0.4`
-  - Response Format: `JSON Object`
+We use HTTP Request directly because it's version-stable across n8n updates and works without installing community nodes.
+
+- Method: `POST`
+- URL: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent`
+- Authentication: Generic Credential Type → Query Auth
+  - Name: `key`
+  - Value: `={{ $env.GEMINI_API_KEY }}` (or paste directly if env not configured in n8n)
+- Send Body: ON, Body Content Type: JSON, Specify Body: Using JSON
+- JSON body:
+
+```json
+{
+  "systemInstruction": {
+    "parts": [{ "text": "={{ $json.systemPrompt }}" }]
+  },
+  "contents": [
+    {
+      "role": "user",
+      "parts": [{ "text": "={{ $json.userPrompt }}" }]
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0.4,
+    "maxOutputTokens": 2000,
+    "responseMimeType": "application/json"
+  }
+}
+```
+
+Expected response shape:
+```json
+{
+  "candidates": [{
+    "content": {
+      "parts": [{ "text": "{\"hafta_basligi\":\"...\", ...}" }]
+    }
+  }],
+  "usageMetadata": {
+    "promptTokenCount": 450,
+    "candidatesTokenCount": 1200
+  }
+}
+```
+
+> **Alternatif:** n8n Settings → Community Nodes → install `@n8n/n8n-nodes-langchain` → use "Google Gemini Chat Model" node. HTTP Request is simpler for first version.
 
 - [ ] **Step 7: Code node "Parse and Format"**
 
 ```javascript
 const raw = $input.first().json;
-const planJson = typeof raw.message?.content === 'string'
-  ? JSON.parse(raw.message.content)
-  : raw.message?.content || JSON.parse(raw.choices?.[0]?.message?.content || '{}');
+// Gemini returns: candidates[0].content.parts[0].text (a JSON string)
+const text = raw.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+const planJson = JSON.parse(text);
 
-const promptTokens = raw.usage?.prompt_tokens || 0;
-const completionTokens = raw.usage?.completion_tokens || 0;
+const promptTokens = raw.usageMetadata?.promptTokenCount || 0;
+const completionTokens = raw.usageMetadata?.candidatesTokenCount || 0;
 
 // Markdown formatla (3 mesaj boyunda olacak şekilde böl)
 const dayNames = {
@@ -1682,7 +1727,7 @@ VALUES (
   date_trunc('week', CURRENT_DATE)::date,
   '{{ JSON.stringify($json.plan_json) }}'::jsonb,
   $${{ $json.plan_markdown }}$$,
-  'gpt-4o-mini',
+  'gemini-1.5-flash',
   {{ $json.prompt_token }},
   {{ $json.completion_token }}
 )
@@ -2026,7 +2071,7 @@ Create `README.md` (overwrite skeleton):
 ````markdown
 # weekly-life-planner-ai
 
-> Yapay zeka destekli haftalık yaşam planlayıcısı — Telegram + n8n + Supabase + OpenAI gpt-4o-mini
+> Yapay zeka destekli haftalık yaşam planlayıcısı — Telegram + n8n + Supabase + Google Gemini 1.5 Flash
 
 **Yazar:** Beyza Ata · [@ataabeeyzaa](https://github.com/ataabeeyzaa)
 **Ders:** Veri Tabanı (Database-AI Entegrasyonu) — Mayıs 2026
@@ -2044,7 +2089,7 @@ Modern hayatta haftalık planlama 3 sebepten zor: (1) bilişsel yük (hedef + ta
 ## Mimari
 
 ```
-Kullanıcı (Telegram) ↔ n8n (Docker) ↔ Supabase PostgreSQL + OpenAI gpt-4o-mini
+Kullanıcı (Telegram) ↔ n8n (Docker) ↔ Supabase PostgreSQL + Google Gemini 1.5 Flash
 ```
 
 5 workflow: 4 komut işleyici + 1 Pazar 20:00 cron.
@@ -2268,7 +2313,7 @@ Final length target: 5-8 minutes.
 Description:
 ```
 GitHub: https://github.com/ataabeeyzaa/weekly-life-planner-ai
-Stack: n8n + Supabase + OpenAI gpt-4o-mini + Telegram
+Stack: n8n + Supabase + Google Gemini 1.5 Flash + Telegram
 
 00:00 Giriş
 00:30 Mimari

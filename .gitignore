@@ -3,6 +3,16 @@
 .env.local
 *.pem
 *.key
+# Yaygın scratch / credential dosyaları
+Yeni Metin Belgesi.txt
+New Text Document.txt
+credentials.txt
+secrets.txt
+notes.txt
+*.local.txt
+
+# Claude Code yerel ayarları (kişisel)
+.claude/
 
 # n8n local data
 n8n_data/
