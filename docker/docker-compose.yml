@@ -1,0 +1,41 @@
+# weekly-life-planner-ai — n8n self-hosted (Docker)
+# Çalıştırmak için: docker compose up -d
+# n8n UI: http://localhost:5678
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: weekly-planner-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Temel ayarlar
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+
+      # Webhook URL — ngrok ile değişir, .env'den okunur
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678/}
+
+      # Türkiye saat dilimi (cron Pazar 20:00 doğru çalışsın)
+      - GENERIC_TIMEZONE=Europe/Istanbul
+      - TZ=Europe/Istanbul
+
+      # Telemetri kapalı, performans için
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+
+      # Yeni n8n versiyonu için güvenlik
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_GIT_NODE_DISABLE_BARE_REPOS=true
+
+      # Workflow şifreleme key (n8n otomatik üretir, ama sabit tut)
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-please-change-this-32char-key-1234}
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:
+    name: weekly_planner_n8n_data
